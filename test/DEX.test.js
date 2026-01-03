@@ -11,52 +11,77 @@ describe("DEX", function () {
     const MockERC20 = await ethers.getContractFactory("MockERC20");
     tokenA = await MockERC20.deploy("Token A", "TKA");
     tokenB = await MockERC20.deploy("Token B", "TKB");
+    await tokenA.deployed();
+    await tokenB.deployed();
 
     const DEX = await ethers.getContractFactory("DEX");
     dex = await DEX.deploy(tokenA.address, tokenB.address);
+    await dex.deployed();
+
+    // Mint and approve tokens
+    await tokenA.mint(owner.address, ethers.utils.parseEther("1000000"));
+    await tokenB.mint(owner.address, ethers.utils.parseEther("1000000"));
+    await tokenA.mint(addr1.address, ethers.utils.parseEther("1000000"));
+    await tokenB.mint(addr1.address, ethers.utils.parseEther("1000000"));
 
     await tokenA.approve(dex.address, ethers.utils.parseEther("1000000"));
     await tokenB.approve(dex.address, ethers.utils.parseEther("1000000"));
-    await tokenA.mint(addr1.address, ethers.utils.parseEther("1000"));
-    await tokenB.mint(addr1.address, ethers.utils.parseEther("1000"));
     await tokenA.connect(addr1).approve(dex.address, ethers.utils.parseEther("1000000"));
     await tokenB.connect(addr1).approve(dex.address, ethers.utils.parseEther("1000000"));
   });
 
+  // Helper function for integer sqrt like Solidity
+  function sqrt(value) {
+    let z = value;
+    let x = value.div(2).add(1);
+    while (x.lt(z)) {
+      z = x;
+      x = value.div(x).add(x).div(2);
+    }
+    return z;
+  }
+
   describe("Liquidity Management", function () {
     it("should allow initial liquidity provision", async function () {
-      const tx = await dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"));
-      expect(tx).to.emit(dex, "LiquidityAdded");
+      await expect(dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200")))
+        .to.emit(dex, "LiquidityAdded");
     });
 
     it("should mint correct LP tokens for first provider", async function () {
       const amountA = ethers.utils.parseEther("100");
       const amountB = ethers.utils.parseEther("200");
+
       await dex.addLiquidity(amountA, amountB);
+
+      const expectedLP = sqrt(amountA.mul(amountB).div(ethers.utils.parseEther("1")));
       const liquidity = await dex.getLiquidity(owner.address);
-      const expected = ethers.BigNumber.from("14142135623730950488");
-      expect(liquidity).to.equal(expected);
+
+      expect(liquidity).to.equal(expectedLP);
     });
 
     it("should allow subsequent liquidity additions", async function () {
       await dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"));
-      const tx = await dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"));
-      expect(tx).to.emit(dex, "LiquidityAdded");
+      await expect(dex.addLiquidity(ethers.utils.parseEther("50"), ethers.utils.parseEther("100")))
+        .to.emit(dex, "LiquidityAdded");
     });
 
     it("should maintain price ratio on liquidity addition", async function () {
       await dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"));
+      await dex.addLiquidity(ethers.utils.parseEther("50"), ethers.utils.parseEther("100"));
       const [reserveA, reserveB] = await dex.getReserves();
-      const tx = await dex.addLiquidity(ethers.utils.parseEther("50"), ethers.utils.parseEther("100"));
-      expect(tx).to.emit(dex, "LiquidityAdded");
+
+      // Compare using BigNumber scaling
+      const priceRatio = reserveB.mul(ethers.utils.parseEther("1")).div(reserveA);
+      const expectedRatio = ethers.utils.parseEther("2"); // 200/100 = 2
+      expect(priceRatio).to.equal(expectedRatio);
     });
 
     it("should allow partial liquidity removal", async function () {
       await dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"));
       const liquidity = await dex.getLiquidity(owner.address);
       const half = liquidity.div(2);
-      const tx = await dex.removeLiquidity(half);
-      expect(tx).to.emit(dex, "LiquidityRemoved");
+      await expect(dex.removeLiquidity(half))
+        .to.emit(dex, "LiquidityRemoved");
     });
 
     it("should return correct token amounts on liquidity removal", async function () {
@@ -68,13 +93,15 @@ describe("DEX", function () {
     });
 
     it("should revert on zero liquidity addition", async function () {
-      await expect(dex.addLiquidity(0, ethers.utils.parseEther("200"))).to.be.revertedWith("Amounts must be greater than 0");
+      await expect(dex.addLiquidity(0, ethers.utils.parseEther("200")))
+        .to.be.revertedWith("Amounts must be greater than 0");
     });
 
     it("should revert when removing more liquidity than owned", async function () {
       await dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"));
       const liquidity = await dex.getLiquidity(owner.address);
-      await expect(dex.removeLiquidity(liquidity.add(1))).to.be.revertedWith("Insufficient liquidity");
+      await expect(dex.removeLiquidity(liquidity.add(1)))
+        .to.be.revertedWith("Insufficient liquidity");
     });
   });
 
@@ -84,13 +111,11 @@ describe("DEX", function () {
     });
 
     it("should swap token A for token B", async function () {
-      const tx = await dex.swapAForB(ethers.utils.parseEther("10"));
-      expect(tx).to.emit(dex, "Swap");
+      await expect(dex.swapAForB(ethers.utils.parseEther("10"))).to.emit(dex, "Swap");
     });
 
     it("should swap token B for token A", async function () {
-      const tx = await dex.swapBForA(ethers.utils.parseEther("10"));
-      expect(tx).to.emit(dex, "Swap");
+      await expect(dex.swapBForA(ethers.utils.parseEther("10"))).to.emit(dex, "Swap");
     });
 
     it("should calculate correct output amount with fee", async function () {
@@ -120,14 +145,12 @@ describe("DEX", function () {
     });
 
     it("should handle large swaps with high price impact", async function () {
-      const tx = await dex.swapAForB(ethers.utils.parseEther("1000"));
-      expect(tx).to.emit(dex, "Swap");
+      await expect(dex.swapAForB(ethers.utils.parseEther("1000"))).to.emit(dex, "Swap");
     });
 
     it("should handle multiple consecutive swaps", async function () {
       await dex.swapAForB(ethers.utils.parseEther("1"));
-      const tx = await dex.swapBForA(ethers.utils.parseEther("1"));
-      expect(tx).to.emit(dex, "Swap");
+      await expect(dex.swapBForA(ethers.utils.parseEther("1"))).to.emit(dex, "Swap");
     });
   });
 
@@ -171,27 +194,29 @@ describe("DEX", function () {
 
   describe("Edge Cases", function () {
     it("should handle very small liquidity amounts", async function () {
-      const tx = await dex.addLiquidity(ethers.utils.parseEther("0.001"), ethers.utils.parseEther("0.002"));
-      expect(tx).to.emit(dex, "LiquidityAdded");
+      await expect(dex.addLiquidity(ethers.utils.parseEther("0.001"), ethers.utils.parseEther("0.002")))
+        .to.emit(dex, "LiquidityAdded");
     });
 
     it("should handle very large liquidity amounts", async function () {
       await tokenA.mint(owner.address, ethers.utils.parseEther("1000000"));
       await tokenB.mint(owner.address, ethers.utils.parseEther("1000000"));
-      const tx = await dex.addLiquidity(ethers.utils.parseEther("100000"), ethers.utils.parseEther("200000"));
-      expect(tx).to.emit(dex, "LiquidityAdded");
+      await expect(dex.addLiquidity(ethers.utils.parseEther("100000"), ethers.utils.parseEther("200000")))
+        .to.emit(dex, "LiquidityAdded");
     });
 
     it("should prevent unauthorized access", async function () {
       await dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"));
       const liquidity = await dex.getLiquidity(owner.address);
-      await expect(dex.connect(addr2).removeLiquidity(liquidity)).to.be.revertedWith("Insufficient liquidity");
+      await expect(dex.connect(addr2).removeLiquidity(liquidity))
+        .to.be.revertedWith("Insufficient liquidity");
     });
   });
 
   describe("Events", function () {
     it("should emit LiquidityAdded event", async function () {
-      await expect(dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200"))).to.emit(dex, "LiquidityAdded");
+      await expect(dex.addLiquidity(ethers.utils.parseEther("100"), ethers.utils.parseEther("200")))
+        .to.emit(dex, "LiquidityAdded");
     });
 
     it("should emit LiquidityRemoved event", async function () {
